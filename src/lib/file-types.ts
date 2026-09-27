@@ -1,0 +1,219 @@
+export type FileCategory =
+  | "markdown"
+  | "text"
+  | "code"
+  | "image"
+  | "video"
+  | "audio"
+  | "pdf"
+  | "document"
+  | "data"
+  | "unknown"
+
+const EXT_MAP: Record<string, FileCategory> = {
+  // Markdown
+  md: "markdown",
+  mdx: "markdown",
+
+  // Text
+  txt: "text",
+  log: "text",
+
+  // Code
+  js: "code",
+  jsx: "code",
+  ts: "code",
+  tsx: "code",
+  py: "code",
+  rs: "code",
+  go: "code",
+  java: "code",
+  c: "code",
+  cpp: "code",
+  h: "code",
+  hpp: "code",
+  rb: "code",
+  php: "code",
+  swift: "code",
+  kt: "code",
+  scala: "code",
+  sh: "code",
+  bash: "code",
+  zsh: "code",
+  sql: "code",
+  r: "code",
+  lua: "code",
+  css: "code",
+  scss: "code",
+  less: "code",
+  html: "code",
+  htm: "code",
+  xml: "code",
+  svg: "code",
+  vue: "code",
+  svelte: "code",
+  toml: "code",
+  ini: "code",
+  cfg: "code",
+  conf: "code",
+  dockerfile: "code",
+  makefile: "code",
+
+  // Images
+  png: "image",
+  jpg: "image",
+  jpeg: "image",
+  gif: "image",
+  webp: "image",
+  bmp: "image",
+  ico: "image",
+  tiff: "image",
+  tif: "image",
+  avif: "image",
+  heic: "image",
+  heif: "image",
+
+  // Video
+  mp4: "video",
+  webm: "video",
+  mov: "video",
+  avi: "video",
+  mkv: "video",
+  flv: "video",
+  wmv: "video",
+  m4v: "video",
+
+  // Audio
+  mp3: "audio",
+  wav: "audio",
+  ogg: "audio",
+  flac: "audio",
+  aac: "audio",
+  m4a: "audio",
+  wma: "audio",
+
+  // Standalone Mermaid sources use the same renderer as fenced Mermaid
+  // blocks. Keep them in the code family so callers load their UTF-8 source
+  // before handing the content to FilePreview.
+  mmd: "code",
+  mermaid: "code",
+
+  // PDF
+  pdf: "pdf",
+
+  // Documents. Some are previewable through backend text extraction.
+  doc: "document",
+  docx: "document",
+  docm: "document",
+  xls: "document",
+  xlsx: "document",
+  xlsm: "document",
+  xlsb: "document",
+  ppt: "document",
+  pps: "document",
+  pot: "document",
+  pptx: "document",
+  pptm: "document",
+  ppsx: "document",
+  ppsm: "document",
+  rtf: "document",
+  odt: "document",
+  ods: "document",
+  odp: "document",
+  pages: "document",
+  numbers: "document",
+  key: "document",
+  epub: "document",
+  mobi: "document",
+  org: "document",
+
+  // Data
+  json: "data",
+  jsonl: "data",
+  csv: "data",
+  tsv: "data",
+  yaml: "data",
+  yml: "data",
+  ndjson: "data",
+}
+
+export function getFileCategory(filePath: string): FileCategory {
+  // Strip the directory first (like getFileExtension) so basename entries such as
+  // "dockerfile"/"makefile" resolve; fall back to the basename when there's no dot.
+  const fileName = filePath.split(/[\\/]/).pop() ?? ""
+  const ext = fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() ?? "" : fileName.toLowerCase()
+  return EXT_MAP[ext] ?? "unknown"
+}
+
+export function isTextReadable(category: FileCategory): boolean {
+  return ["markdown", "text", "code", "data"].includes(category)
+}
+
+export const EXTRACTED_TEXT_PREVIEW_EXTENSIONS = new Set([
+  "pdf",
+  "doc",
+  "docx",
+  "docm",
+  "ppt",
+  "pps",
+  "pot",
+  "pptx",
+  "pptm",
+  "ppsx",
+  "ppsm",
+  "xls",
+  "xlsx",
+  "xlsm",
+  "xlsb",
+  "odt",
+  "ods",
+  "odp",
+  "rtf",
+  "epub",
+  "mobi",
+  "org",
+])
+
+export function getFileExtension(filePath: string): string {
+  const fileName = filePath.split(/[\\/]/).pop() ?? ""
+  return fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() ?? "" : ""
+}
+
+export function isExtractedTextPreviewFile(filePath: string): boolean {
+  return EXTRACTED_TEXT_PREVIEW_EXTENSIONS.has(getFileExtension(filePath))
+}
+
+export function isBinary(category: FileCategory): boolean {
+  return ["image", "video", "audio", "document", "unknown"].includes(category)
+}
+
+export function getCodeLanguage(filePath: string): string {
+  const ext = filePath.split(".").pop()?.toLowerCase() ?? ""
+  const langMap: Record<string, string> = {
+    js: "javascript",
+    jsx: "javascript",
+    ts: "typescript",
+    tsx: "typescript",
+    py: "python",
+    rs: "rust",
+    go: "go",
+    java: "java",
+    rb: "ruby",
+    php: "php",
+    swift: "swift",
+    sql: "sql",
+    html: "html",
+    htm: "html",
+    css: "css",
+    json: "json",
+    yaml: "yaml",
+    yml: "yaml",
+    xml: "xml",
+    mmd: "mermaid",
+    mermaid: "mermaid",
+    sh: "bash",
+    bash: "bash",
+    toml: "toml",
+  }
+  return langMap[ext] ?? ext
+}

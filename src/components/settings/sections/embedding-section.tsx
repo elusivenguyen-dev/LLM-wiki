@@ -1,0 +1,487 @@
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
+import { useTranslation } from "react-i18next"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { useWikiStore } from "@/stores/wiki-store"
+import type { EmbeddingConfig } from "@/stores/wiki-store"
+import {
+  dropLegacyVectorTable,
+  embedAllPages,
+  getEmbeddingCount,
+  getLastEmbeddingError,
+  getEmbeddingReindexState,
+  legacyVectorRowCount,
+  subscribeEmbeddingReindexState,
+} from "@/lib/embedding"
+import { testEmbeddingConnection, testEmbeddingFunction, type ProviderTestResult } from "@/lib/connection-tests"
+import type { SettingsDraft, DraftSetter } from "../settings-types"
+
+interface Props {
+  draft: SettingsDraft
+  setDraft: DraftSetter
+}
+
+type TestState =
+  | { kind: "idle" }
+  | { kind: "running"; label: string }
+  | { kind: "done"; result: ProviderTestResult }
+
+function parsePositiveInteger(value: string): number | undefined {
+  const trimmed = value.trim()
+  if (trimmed === "") return undefined
+  const n = Number(trimmed)
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  return Math.floor(n)
+}
+
+const RESERVED_HEADER_NAMES = new Set([
+  "authorization",
+  "content-type",
+  "host",
+  "content-length",
+  "x-goog-api-key",
+])
+const HTTP_HEADER_NAME_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
+const EMBEDDING_MODEL_SUGGESTIONS = [
+  "text-embedding-3-small",
+  "text-embedding-3-large",
+  "gemini-embedding-001",
+  "gemini-embedding-2",
+  "text-embedding-004",
+  "doubao-embedding-vision",
+  "doubao-embedding-text-240715",
+  "text-embedding-qwen3-embedding-0.6b",
+  "nomic-embed-text",
+  "mxbai-embed-large",
+]
+
+function headersToText(headers: Record<string, string>): string {
+  return Object.entries(headers)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\n")
+}
+
+function parseHeadersText(text: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith("#")) continue
+    const idx = line.indexOf(":")
+    if (idx <= 0) continue
+    const name = line.slice(0, idx).trim()
+    const value = line.slice(idx + 1).trim()
+    if (!name || !value || !HTTP_HEADER_NAME_RE.test(name) || RESERVED_HEADER_NAMES.has(name.toLowerCase())) continue
+    out[name] = value
+  }
+  return out
+}
+
+export function EmbeddingSection({ draft, setDraft }: Props) {
+  const { t } = useTranslation()
+  const project = useWikiStore((s) => s.project)
+  const embeddingConfig = useWikiStore((s) => s.embeddingConfig)
+
+  const [chunkCount, setChunkCount] = useState<number | null>(null)
+  const [legacyCount, setLegacyCount] = useState<number>(0)
+  const [lastError, setLastError] = useState<string | null>(null)
+  const sharedReindex = useSyncExternalStore(
+    subscribeEmbeddingReindexState,
+    getEmbeddingReindexState,
+  )
+  const reindex = "projectPath" in sharedReindex
+    && project
+    && sharedReindex.projectPath === project.path.replace(/\\/g, "/")
+    ? sharedReindex
+    : { kind: "idle" as const }
+  const [testState, setTestState] = useState<TestState>({ kind: "idle" })
+  const [legacyDropped, setLegacyDropped] = useState(false)
+  const [headersText, setHeadersText] = useState<string>(() => headersToText(draft.embeddingExtraHeaders ?? {}))
+
+  const refreshStats = useCallback(async () => {
+    if (!project) return
+    try {
+      const [chunks, legacy] = await Promise.all([
+        getEmbeddingCount(project.path),
+        legacyVectorRowCount(project.path),
+      ])
+      setChunkCount(chunks)
+      setLegacyCount(legacy)
+    } catch {
+      setChunkCount(null)
+    }
+    setLastError(getLastEmbeddingError())
+  }, [project])
+
+  useEffect(() => {
+    void refreshStats()
+  }, [refreshStats])
+
+  const handleReindex = useCallback(async () => {
+    if (!project) return
+    try {
+      await embedAllPages(
+        project.path,
+        embeddingConfig,
+        undefined,
+        { clearExisting: true },
+      )
+      await refreshStats()
+    } catch (err) {
+      await refreshStats()
+    }
+  }, [project, embeddingConfig, refreshStats])
+
+  const handleDropLegacy = useCallback(async () => {
+    if (!project) return
+    await dropLegacyVectorTable(project.path)
+    setLegacyCount(0)
+    setLegacyDropped(true)
+  }, [project])
+
+  const draftEmbeddingConfig: EmbeddingConfig = {
+    enabled: draft.embeddingEnabled,
+    endpoint: draft.embeddingEndpoint,
+    apiKey: draft.embeddingApiKey,
+    model: draft.embeddingModel,
+    outputDimensionality: draft.embeddingOutputDimensionality,
+    maxChunkChars: draft.embeddingMaxChunkChars,
+    overlapChunkChars: draft.embeddingOverlapChunkChars,
+    concurrency: draft.embeddingConcurrency,
+    batchSize: draft.embeddingBatchSize,
+    extraHeaders: draft.embeddingExtraHeaders,
+  }
+
+  async function runEmbeddingTest(kind: "connection" | "function") {
+    setTestState({
+      kind: "running",
+      label: kind === "connection"
+        ? t("settings.sections.embedding.testingConnection")
+        : t("settings.sections.embedding.testingFunction"),
+    })
+    const result = kind === "connection"
+      ? await testEmbeddingConnection(draftEmbeddingConfig)
+      : await testEmbeddingFunction(draftEmbeddingConfig)
+    setTestState({ kind: "done", result })
+    setLastError(getLastEmbeddingError())
+  }
+
+  const showLegacyMigration =
+    legacyCount > 0 && (chunkCount === null || chunkCount === 0)
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold">{t("settings.sections.embedding.title")}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {t("settings.sections.embedding.description")}
+        </p>
+      </div>
+
+      <div className="flex items-center justify-between rounded-md border p-3">
+        <div>
+          <div className="text-sm font-medium">{t("settings.sections.embedding.enableLabel")}</div>
+          <div className="text-xs text-muted-foreground">
+            {t("settings.sections.embedding.enableHint")}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setDraft("embeddingEnabled", !draft.embeddingEnabled)}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+            draft.embeddingEnabled ? "bg-primary" : "bg-muted"
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+              draft.embeddingEnabled ? "translate-x-4.5" : "translate-x-0.5"
+            }`}
+          />
+        </button>
+      </div>
+
+      {draft.embeddingEnabled && (
+        <>
+          <div className="space-y-2">
+            <Label>{t("settings.sections.embedding.endpoint")}</Label>
+            <Input
+              value={draft.embeddingEndpoint}
+              onChange={(e) => setDraft("embeddingEndpoint", e.target.value)}
+              placeholder="http://127.0.0.1:1234/v1/embeddings"
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("settings.sections.embedding.endpointHint")}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>{t("settings.sections.embedding.apiKey")}</Label>
+            <Input
+              type="password"
+              value={draft.embeddingApiKey}
+              onChange={(e) => setDraft("embeddingApiKey", e.target.value)}
+              placeholder={t("settings.sections.embedding.apiKeyPlaceholder")}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>{t("settings.sections.embedding.model")}</Label>
+            <Input
+              value={draft.embeddingModel}
+              onChange={(e) => setDraft("embeddingModel", e.target.value)}
+              list="embedding-model-suggestions"
+              placeholder="e.g. text-embedding-qwen3-embedding-0.6b or gemini-embedding-001"
+            />
+            <datalist id="embedding-model-suggestions">
+              {EMBEDDING_MODEL_SUGGESTIONS.map((model) => (
+                <option key={model} value={model} />
+              ))}
+            </datalist>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.sections.embedding.modelHint")}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>{t("settings.sections.embedding.outputDimensionality")}</Label>
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              value={draft.embeddingOutputDimensionality ?? ""}
+              onChange={(e) => {
+                setDraft("embeddingOutputDimensionality", parsePositiveInteger(e.target.value))
+              }}
+              placeholder="768"
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("settings.sections.embedding.outputDimensionalityHint")}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>{t("settings.sections.embedding.extraHeaders")}</Label>
+            <textarea
+              value={headersText}
+              onChange={(e) => {
+                const text = e.target.value
+                setHeadersText(text)
+                setDraft("embeddingExtraHeaders", parseHeadersText(text))
+              }}
+              placeholder={"X-Model-Provider-Id: siliconflow\nX-Custom-Header: value"}
+              rows={3}
+              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("settings.sections.embedding.extraHeadersHint")}
+            </p>
+          </div>
+
+          <div className="space-y-3 rounded-md border p-3">
+            <div className="text-sm font-medium">
+              {t("settings.sections.embedding.chunking")}
+            </div>
+
+            <div className="space-y-2">
+              <Label>{t("settings.sections.embedding.maxChunkChars")}</Label>
+              <Input
+                type="number"
+                min={200}
+                step={100}
+                value={draft.embeddingMaxChunkChars ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value.trim()
+                  setDraft(
+                    "embeddingMaxChunkChars",
+                    v === "" ? undefined : Number(v),
+                  )
+                }}
+                placeholder="1000"
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("settings.sections.embedding.maxChunkCharsHint")}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>{t("settings.sections.embedding.overlapChunkChars")}</Label>
+              <Input
+                type="number"
+                min={0}
+                step={50}
+                value={draft.embeddingOverlapChunkChars ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value.trim()
+                  setDraft(
+                    "embeddingOverlapChunkChars",
+                    v === "" ? undefined : Number(v),
+                  )
+                }}
+                placeholder="200"
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("settings.sections.embedding.overlapChunkCharsHint")}
+              </p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>{t("settings.sections.embedding.concurrency")}</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={32}
+                  step={1}
+                  value={draft.embeddingConcurrency}
+                  onChange={(e) => setDraft(
+                    "embeddingConcurrency",
+                    Math.max(1, Math.min(32, Number(e.target.value) || 1)),
+                  )}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.sections.embedding.concurrencyHint")}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>{t("settings.sections.embedding.batchSize")}</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={64}
+                  step={1}
+                  value={draft.embeddingBatchSize}
+                  onChange={(e) => setDraft(
+                    "embeddingBatchSize",
+                    Math.max(1, Math.min(64, Number(e.target.value) || 1)),
+                  )}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.sections.embedding.batchSizeHint")}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3 rounded-md border p-3">
+            <div>
+              <div className="text-sm font-medium">
+                {t("settings.sections.embedding.providerTests")}
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t("settings.sections.embedding.providerTestsHint")}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void runEmbeddingTest("connection")}
+                disabled={testState.kind === "running"}
+              >
+                {t("settings.sections.embedding.testConnection")}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void runEmbeddingTest("function")}
+                disabled={testState.kind === "running"}
+              >
+                {t("settings.sections.embedding.testFunction")}
+              </Button>
+            </div>
+            {testState.kind === "running" && (
+              <p className="text-xs text-muted-foreground">{testState.label}</p>
+            )}
+            {testState.kind === "done" && (
+              <div
+                className={`rounded-md border px-3 py-2 text-xs ${
+                  testState.result.ok
+                    ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
+                    : "border-destructive/40 bg-destructive/5 text-destructive"
+                }`}
+              >
+                {testState.result.message}
+              </div>
+            )}
+          </div>
+
+          {showLegacyMigration && (
+            <div className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+              <div className="text-sm font-medium text-destructive">
+                {t("settings.sections.embedding.legacyPromptTitle")}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.sections.embedding.legacyPromptBody", { count: legacyCount })}
+              </p>
+            </div>
+          )}
+
+          <div className="space-y-3 rounded-md border p-3">
+            <div className="text-sm font-medium">
+              {t("settings.sections.embedding.statsHeading")}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.sections.embedding.chunkCount", { count: chunkCount ?? 0 })}
+            </p>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleReindex}
+                disabled={reindex.kind === "running" || !project}
+              >
+                {reindex.kind === "running"
+                  ? t("settings.sections.embedding.reindexing", {
+                      done: reindex.done,
+                      total: reindex.total,
+                    })
+                  : t("settings.sections.embedding.reindexAll")}
+              </Button>
+
+              {legacyCount > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDropLegacy}
+                  disabled={!project}
+                >
+                  {t("settings.sections.embedding.dropLegacy")}
+                </Button>
+              )}
+            </div>
+
+            {reindex.kind === "done" && (
+              <p className="text-xs text-muted-foreground">
+                {t("settings.sections.embedding.reindexDone", { count: reindex.count })}
+              </p>
+            )}
+
+            {reindex.kind === "error" && (
+              <p className="text-xs text-destructive">
+                {t("settings.sections.embedding.reindexError", { message: reindex.message })}
+              </p>
+            )}
+
+            {legacyDropped && (
+              <p className="text-xs text-muted-foreground">
+                {t("settings.sections.embedding.dropLegacyDone")}
+              </p>
+            )}
+
+            {lastError && (
+              <div className="space-y-1">
+                <div className="text-xs font-medium">
+                  {t("settings.sections.embedding.lastErrorHeading")}
+                </div>
+                <pre className="max-h-32 overflow-auto rounded bg-muted/50 p-2 text-[11px] leading-snug text-muted-foreground">
+                  {lastError}
+                </pre>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}

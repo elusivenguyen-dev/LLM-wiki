@@ -1,0 +1,112 @@
+import type { CustomApiMode } from "./llm-presets"
+import type { AzureModelFamily, CloseBehavior, MineruEffort, MineruLocalBackend, MineruModelVersion, MineruParseMethod, ReasoningConfig, SourceWatchConfig } from "@/stores/wiki-store"
+
+/**
+ * Shape of the draft state each section reads from and writes into.
+ * The parent (SettingsView) owns one instance and hands it to every
+ * section; the Save button at the bottom flushes the whole draft to
+ * stores + disk in one commit.
+ */
+export interface SettingsDraft {
+  // LLM provider
+  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
+  apiKey: string
+  model: string
+  ollamaUrl: string
+  customEndpoint: string
+  azureApiVersion: string
+  azureModelFamily: AzureModelFamily
+  maxContextSize: number
+  apiMode: CustomApiMode | undefined
+  reasoning: ReasoningConfig | undefined
+  ingestReasoning: ReasoningConfig | undefined
+  localCliIsolation: boolean
+
+  // Embedding
+  embeddingEnabled: boolean
+  embeddingEndpoint: string
+  embeddingApiKey: string
+  embeddingModel: string
+  /** Optional Gemini native output_dimensionality. Empty = provider default. */
+  embeddingOutputDimensionality: number | undefined
+  /** Target characters per chunk. Empty = use chunker default (1000). */
+  embeddingMaxChunkChars: number | undefined
+  /** Overlap characters between adjacent chunks. Empty = default (200). */
+  embeddingOverlapChunkChars: number | undefined
+  /** Maximum number of embedding requests in flight. */
+  embeddingConcurrency: number
+  /** Inputs per request for OpenAI-compatible batch endpoints. */
+  embeddingBatchSize: number
+  /** Extra HTTP headers to send on every embedding request. Empty = none. */
+  embeddingExtraHeaders: Record<string, string>
+
+  // Multimodal (image captioning at ingest time)
+  multimodalEnabled: boolean
+  multimodalUseMainLlm: boolean
+  multimodalProvider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
+  multimodalApiKey: string
+  multimodalModel: string
+  multimodalOllamaUrl: string
+  multimodalCustomEndpoint: string
+  multimodalAzureApiVersion: string
+  multimodalAzureModelFamily: AzureModelFamily
+  multimodalApiMode: CustomApiMode | undefined
+  multimodalConcurrency: number
+
+  // Output preferences
+  outputLanguage: string
+  maxHistoryMessages: number
+
+  // Network — global outbound HTTP proxy. Persisted to app-state.json
+  // and read by the Rust setup hook on app launch (changes apply
+  // after restart). See src/lib/proxy-config.ts.
+  proxyEnabled: boolean
+  proxyUrl: string
+  proxyBypassLocal: boolean
+  proxyAcceptInvalidCerts: boolean
+
+  // Scheduled Import
+  scheduledImportEnabled: boolean
+  scheduledImportPath: string
+  scheduledImportInterval: number // minutes
+
+  // UI
+  uiLanguage: string
+  theme: "light" | "dark" | "system"
+  zoomLevel: number
+
+  // General app behavior
+  autostart: boolean
+  closeBehavior: CloseBehavior
+
+  // Source folder auto watch
+  sourceWatchConfig: SourceWatchConfig
+
+  // MinerU PDF parsing
+  mineruEnabled: boolean
+  mineruBackend: "cloud" | "local"
+  mineruLocalEndpoint: string
+  mineruLocalToken: string
+  mineruLocalBackend: MineruLocalBackend
+  mineruLocalEffort: MineruEffort
+  mineruLocalParseMethod: MineruParseMethod
+  mineruLocalLanguage: string
+  mineruLocalFormulaEnabled: boolean
+  mineruLocalTableEnabled: boolean
+  mineruLocalImageAnalysis: boolean
+  mineruLocalServerUrl: string
+  mineruToken: string
+  mineruModelVersion: MineruModelVersion
+
+  // Local HTTP API server
+  apiEnabled: boolean
+  apiAllowUnauthenticated: boolean
+  apiAllowLanAccess: boolean
+  apiMcpEnabled: boolean
+  apiToken: string
+}
+
+export type DraftSetter = <K extends keyof SettingsDraft>(
+  key: K,
+  value: SettingsDraft[K],
+) => void
